@@ -1,0 +1,12 @@
+auth_module
+
+signup
+login
+reset_password
+change_password
+refresh_token
+getRole
+jwt middleware
+
+rbac
+permissions (as we go will be updated)
