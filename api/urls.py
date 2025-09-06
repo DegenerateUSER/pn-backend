@@ -36,11 +36,7 @@ urlpatterns = [
     path('uploadStudentImage/', views.upload_student_image, name="upload student image for processing"), #proctoring module
     path('', include(router.urls)),
     
-<<<<<<< Updated upstream
     #patch assessment work
-=======
-    #patch assessment work // done
->>>>>>> Stashed changes
     #proctoring module (calculating confidence percentage, video call)
     #sample report generation
 ]

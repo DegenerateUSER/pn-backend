@@ -92,11 +92,7 @@ class AssessmentSerializer(serializers.ModelSerializer):
     # Input/Output fields with custom names
     assessment_name = serializers.CharField(source='title')
     assessment_description = serializers.CharField(source='description', required=False, allow_blank=True)
-<<<<<<< Updated upstream
     set_number = serializers.IntegerField(write_only=True)
-=======
-    num_of_sets = serializers.IntegerField(source='total_sets', write_only=True)
->>>>>>> Stashed changes
     section_names = serializers.ListField(child=serializers.CharField(), write_only=True)
     section_descriptions = serializers.ListField(child=serializers.CharField(), write_only=True)
     is_electron_only = serializers.BooleanField(write_only=True)
@@ -109,11 +105,7 @@ class AssessmentSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'assessment_name', 'assessment_description', 'assessment_type', 
             'created_by', 'created_at', 'updated_at', 'is_active', 'is_published', 
-<<<<<<< Updated upstream
             'total_marks', 'passing_marks', 'duration', 'set_number', 'is_proctored', 
-=======
-            'total_marks', 'passing_marks', 'duration', 'is_proctored', 
->>>>>>> Stashed changes
             'start_time', 'end_time', 'is_electron_only', 'ai_generated_questions',
             'sections',
             # Write-only fields for input

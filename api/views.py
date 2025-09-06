@@ -1551,7 +1551,6 @@ def upload_image_to_s3(image_file, test_code):
         # Generate unique filename
         file_extension = image_file.name.split('.')[-1]
         filename = f"test_submissions/{test_code}_{uuid.uuid4().hex}.{file_extension}"
-<<<<<<< Updated upstream
         
         # Upload to S3
         s3_client.upload_fileobj(
@@ -1571,27 +1570,6 @@ def upload_image_to_s3(image_file, test_code):
         s3_url = f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION_NAME}.amazonaws.com/{filename}"
         return s3_url, None
         
-=======
-
-        # Upload to S3
-        s3_client.upload_fileobj(
-            image_file,
-            settings.AWS_S3_BUCKET_NAME,
-            filename,
-            ExtraArgs={
-                'ContentType': image_file.content_type,
-                'Metadata': {
-                    'test_code': test_code,
-                    'uploaded_at': datetime.now().isoformat()
-                }
-            }
-        )
-        
-        # Generate S3 URL
-        s3_url = f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION_NAME}.amazonaws.com/{filename}"
-        return s3_url, None
-        
->>>>>>> Stashed changes
     except ClientError as e:
         return None, f"S3 upload error: {str(e)}"
     except Exception as e:
