@@ -151,6 +151,7 @@ class AssessmentView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        """Create a new assessment"""
         try:
             data = json.loads(request.body)
             assessment = SampleJSON(data=data)
@@ -162,18 +163,19 @@ class AssessmentView(APIView):
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     def get(self, request):
+        """Get all assessments or a specific assessment by ID"""
         try:
             assessment_id = request.query_params.get('id')
             
             if assessment_id:
-                
+                # Get specific assessment
                 assessment = get_object_or_404(SampleJSON, id=assessment_id)
                 return Response({
                     "id": assessment.id,
                     "data": assessment.data
                 }, status=status.HTTP_200_OK)
             else:
-              
+                # Get all assessments
                 assessments = SampleJSON.objects.all()
                 assessments_data = []
                 for assessment in assessments:
@@ -190,7 +192,7 @@ class AssessmentView(APIView):
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     def put(self, request):
-       
+        """Update an existing assessment"""
         try:
             assessment_id = request.query_params.get('id')
             if not assessment_id:
@@ -199,7 +201,7 @@ class AssessmentView(APIView):
             assessment = get_object_or_404(SampleJSON, id=assessment_id)
             data = json.loads(request.body)
             
-            
+            # Update the assessment data
             assessment.data = data
             assessment.save()
             
@@ -215,7 +217,7 @@ class AssessmentView(APIView):
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     def patch(self, request):
-        
+        """Partially update an existing assessment"""
         try:
             assessment_id = request.query_params.get('id')
             if not assessment_id:
@@ -224,7 +226,7 @@ class AssessmentView(APIView):
             assessment = get_object_or_404(SampleJSON, id=assessment_id)
             data = json.loads(request.body)
             
-            
+            # Merge with existing data for partial update
             if hasattr(assessment, 'data') and isinstance(assessment.data, dict):
                 assessment.data.update(data)
             else:
@@ -244,6 +246,7 @@ class AssessmentView(APIView):
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     def delete(self, request):
+        """Delete an assessment"""
         try:
             assessment_id = request.query_params.get('id')
             if not assessment_id:
@@ -282,11 +285,17 @@ class AssessmentViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     pagination_class = AssessmentPagination
     
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        # Pass set_number from query params to serializer so nested questions can be filtered
+        context['set_number'] = self.request.query_params.get('set_number')
+        return context
+
     def get_queryset(self):
-        
+        """Filter assessments by the current user with optional filters"""
         queryset = Assessment.objects.filter(created_by=self.request.user)
         
-        
+        # Optional query parameters for filtering
         assessment_type = self.request.query_params.get('type', None)
         is_published = self.request.query_params.get('is_published', None)
         is_active = self.request.query_params.get('is_active', None)
@@ -306,6 +315,7 @@ class AssessmentViewSet(viewsets.ModelViewSet):
         ).order_by('-created_at')
 
     def create(self, request, *args, **kwargs):
+        """Create a new assessment"""
         try:
             print("requewst received")
             serializer = self.get_serializer(data=request.data)
@@ -336,7 +346,7 @@ class AssessmentViewSet(viewsets.ModelViewSet):
             )
 
     def retrieve(self, request, *args, **kwargs):
-       
+        """Retrieve a specific assessment"""
         try:
             assessment = self.get_object()
             serializer = self.get_serializer(assessment)
@@ -353,11 +363,12 @@ class AssessmentViewSet(viewsets.ModelViewSet):
             )
 
     def update(self, request, *args, **kwargs):
+        """Update an assessment"""
         try:
             partial = kwargs.pop('partial', False)
             assessment = self.get_object()
             
-            
+            # Check if assessment is already published and restrict certain updates
             if assessment.is_published and 'questions' in request.data:
                 return Response(
                     {
@@ -397,11 +408,11 @@ class AssessmentViewSet(viewsets.ModelViewSet):
             )
 
     def destroy(self, request, *args, **kwargs):
-        
+        """Delete an assessment"""
         try:
             assessment = self.get_object()
             
-            
+            # Check if assessment can be deleted (e.g., not if it has submissions)
             if assessment.is_published:
                 return Response(
                     {
@@ -426,11 +437,11 @@ class AssessmentViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def publish(self, request, pk=None):
-       
+        """Publish an assessment"""
         try:
             assessment = self.get_object()
             
-          
+            # Validation before publishing
             if not assessment.sections.exists():
                 return Response(
                     {
@@ -464,6 +475,7 @@ class AssessmentViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def unpublish(self, request, pk=None):
+        """Unpublish an assessment"""
         try:
             assessment = self.get_object()
             assessment.is_published = False
@@ -483,12 +495,12 @@ class AssessmentViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def duplicate(self, request, pk=None):
-
+        """Create a copy of an assessment"""
         try:
             original_assessment = self.get_object()
             
             with transaction.atomic():
-
+                # Create new assessment
                 new_assessment = Assessment.objects.create(
                     title=f"{original_assessment.title} (Copy)",
                     description=original_assessment.description,
@@ -506,7 +518,7 @@ class AssessmentViewSet(viewsets.ModelViewSet):
                     ai_generated_questions=original_assessment.ai_generated_questions
                 )
                 
-              
+                # Copy sections and questions
                 for section in original_assessment.sections.all():
                     new_section = Section.objects.create(
                         assessment=new_assessment,
@@ -557,7 +569,7 @@ class AssessmentViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'])
     def statistics(self, request):
-
+        """Get assessment statistics for the current user"""
         try:
             user_assessments = self.get_queryset()
             
@@ -1666,3 +1678,178 @@ def upload_student_image(request):
  
     return Response(response_data, status=status.HTTP_201_CREATED)
     
+class GenerateStudentReportView(APIView):
+    """
+    Generate a comprehensive student report for an assessment attempt and
+    optionally analyze weaknesses using Gemini (if GEMINI_API_KEY is set).
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        req = GenerateStudentReportRequestSerializer(data=request.data)
+        if not req.is_valid():
+            return Response({'error': 'Invalid data', 'details': req.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+        data = req.validated_data
+
+        # Resolve report
+        report = None
+        try:
+            if data.get('report_id'):
+                report = Report.objects.select_related('assessment', 'candidate').get(id=data['report_id'])
+            else:
+                assessment = Assessment.objects.get(id=data['assessment_id'])
+                candidate = None
+                if data.get('candidate_id'):
+                    candidate = User.objects.get(id=data['candidate_id'])
+                elif data.get('candidate_email'):
+                    candidate = User.objects.get(email=data['candidate_email'])
+                report = Report.objects.select_related('assessment', 'candidate').filter(
+                    assessment=assessment, candidate=candidate
+                ).order_by('-submitted_at', '-ended_at', '-started_at').first()
+                if not report:
+                    return Response({'error': 'Report not found for candidate and assessment'}, status=status.HTTP_404_NOT_FOUND)
+        except (Report.DoesNotExist, Assessment.DoesNotExist, User.DoesNotExist):
+            return Response({'error': 'Specified entities not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Load attempts with question context
+        attempts = list(QuestionAttempt.objects.filter(report=report).select_related('question', 'question__section'))
+        assessment = report.assessment
+
+        total_marks_assessment = assessment.total_marks or 0
+        obtained_marks_report = report.obtained_marks if report.obtained_marks is not None else None
+        obtained_marks = obtained_marks_report if obtained_marks_report is not None else sum((a.marks_obtained or 0) for a in attempts)
+
+        # Per-section breakdown
+        sections = list(assessment.sections.all())
+        section_stats = {s.id: {
+            'section_id': s.id,
+            'section_name': s.name,
+            'total_questions': 0,
+            'attempted': 0,
+            'correct': 0,
+            'wrong': 0,
+            'marks_obtained': 0,
+            'total_marks': s.total_marks,
+        } for s in sections}
+
+        # Type breakdown
+        type_stats = {
+            'coding': {'attempted': 0, 'correct': 0, 'wrong': 0, 'marks_obtained': 0},
+            'non-coding': {'attempted': 0, 'correct': 0, 'wrong': 0, 'marks_obtained': 0}
+        }
+
+        # Question details
+        question_details = []
+
+        for a in attempts:
+            q = a.question
+            if not q:
+                continue
+            sec = q.section
+            if sec and sec.id in section_stats:
+                section_stats[sec.id]['total_questions'] += 1
+                if a.is_attempted:
+                    section_stats[sec.id]['attempted'] += 1
+                if a.is_correct:
+                    section_stats[sec.id]['correct'] += 1
+                else:
+                    if a.is_attempted:
+                        section_stats[sec.id]['wrong'] += 1
+                section_stats[sec.id]['marks_obtained'] += (a.marks_obtained or 0)
+
+            qtype = (q.question_type or 'non-coding')
+            if qtype in type_stats:
+                if a.is_attempted:
+                    type_stats[qtype]['attempted'] += 1
+                if a.is_correct:
+                    type_stats[qtype]['correct'] += 1
+                else:
+                    if a.is_attempted:
+                        type_stats[qtype]['wrong'] += 1
+                type_stats[qtype]['marks_obtained'] += (a.marks_obtained or 0)
+
+            question_details.append({
+                'question_id': q.id,
+                'section_id': sec.id if sec else None,
+                'section_name': sec.name if sec else None,
+                'question_order': q.question_order,
+                'question_type': qtype,
+                'is_attempted': bool(a.is_attempted),
+                'is_correct': bool(a.is_correct),
+                'marks_obtained': a.marks_obtained or 0,
+                'time_taken': a.time_taken,
+            })
+
+        # Compute overall
+        percentage = round((obtained_marks / total_marks_assessment) * 100, 2) if total_marks_assessment else 0
+
+        # Identify weakest areas (preliminary local heuristic)
+        weakest_sections = sorted(section_stats.values(), key=lambda s: (s['correct'] / s['attempted']) if s['attempted'] else 0)
+        weakest_types = sorted([
+            {'type': t, **stats} for t, stats in type_stats.items()
+        ], key=lambda t: (t['correct'] / t['attempted']) if t['attempted'] else 0)
+
+        summary = {
+            'report_id': report.id,
+            'candidate': {
+                'id': report.candidate.id,
+                'email': report.candidate.email,
+            },
+            'assessment': {
+                'id': assessment.id,
+                'title': assessment.title,
+                'type': assessment.assessment_type,
+                'total_marks': total_marks_assessment,
+            },
+            'score': {
+                'marks_scored': obtained_marks,
+                'percentage': percentage,
+            },
+            'by_section': list(section_stats.values()),
+            'by_type': type_stats,
+            'questions': question_details,
+        }
+
+        # Optional Gemini analysis
+        analysis = None
+        try:
+            import os
+            api_key = os.environ.get('GEMINI_API_KEY')
+            if api_key:
+                try:
+                    import google.generativeai as genai
+                    genai.configure(api_key=api_key)
+                    model = genai.GenerativeModel('gemini-1.5-flash')
+                    prompt = (
+                        "You are an education analyst. Given this JSON with a student's assessment performance, "
+                        "identify the weakest areas (by section and by question_type), explain why, and provide 5 concise, actionable tips to improve. "
+                        "Respond in JSON with keys: weak_areas (array of {area, reason}), improvement_tips (array of strings).\n\n"
+                        f"DATA: {json.dumps(summary)}"
+                    )
+                    res = model.generate_content(prompt)
+                    # Some SDKs return text; ensure we parse JSON if present
+                    import json as _json
+                    text = getattr(res, 'text', None) or (res.candidates[0].content.parts[0].text if getattr(res, 'candidates', None) else None)
+                    if text:
+                        # Attempt to extract JSON portion
+                        try:
+                            analysis = _json.loads(text)
+                        except Exception:
+                            # Fallback: find first JSON-like block
+                            import re
+                            m = re.search(r"\{[\s\S]*\}", text)
+                            if m:
+                                analysis = _json.loads(m.group(0))
+                except Exception as e:
+                    analysis = {'error': 'gemini_analysis_failed', 'details': str(e)}
+        except Exception:
+            analysis = None
+
+        response = {
+            'message': 'Student report generated successfully',
+            'summary': summary,
+            'analysis': analysis or {'info': 'Set GEMINI_API_KEY to enable AI analysis'}
+        }
+
+        return Response(response, status=status.HTTP_200_OK)

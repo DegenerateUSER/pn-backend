@@ -110,6 +110,7 @@ ASSESSMENT_TYPE_CHOICES = [
 class Assessment(models.Model):
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True, null=True)  # maps to assessment_description
+    assessment_type = models.CharField(max_length=20, choices=ASSESSMENT_TYPE_CHOICES, default='mix')
     created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name="created_assessments")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -117,6 +118,7 @@ class Assessment(models.Model):
     is_published = models.BooleanField(default=False)  # NEW
     total_marks = models.PositiveIntegerField()
     passing_marks = models.PositiveIntegerField()
+    total_sets = models.PositiveIntegerField(default=1)
     duration = models.PositiveIntegerField(help_text="Duration in minutes", null=True, blank=True)  
     set_number = models.PositiveIntegerField(default=1)
     is_proctored = models.BooleanField(default=False)
@@ -260,6 +262,12 @@ class Question(models.Model):
     constraints = models.JSONField(blank=True, null=True)  # ["1 <= length <= 1000", ...]
     expected_output = models.TextField(blank=True, null=True)
     test_cases = models.JSONField(blank=True, null=True)  # { "examples": [...], "hidden": [...] }
+    # Added fields for question management
+    set_number = models.PositiveIntegerField(default=1)  # Which set this question belongs to
+    marks = models.PositiveIntegerField(default=0)  # Positive marks for correct answer
+    negative_marks = models.IntegerField(default=0)  # Negative marks for wrong answer
+    question_order = models.PositiveIntegerField(default=0)  # Order of question within section
+    time_limit = models.PositiveIntegerField(default=0)  # Time limit in seconds
 
 # --------- ASSESSMENT ASSIGNMENTS ----------
 class AssessmentAssignment(models.Model):

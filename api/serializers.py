@@ -1,4 +1,5 @@
 from botocore.client import Config
+import re
 from rest_framework import serializers
 from .models import *
 from django.contrib.auth.password_validation import validate_password
@@ -80,11 +81,21 @@ class QuestionSerializer(serializers.ModelSerializer):
 
 
 class SectionSerializer(serializers.ModelSerializer):
-    questions = QuestionSerializer(many=True, read_only=True)
-    
+    questions = serializers.SerializerMethodField()
+
     class Meta:
         model = Section
         fields = '__all__'
+
+    def get_questions(self, obj):
+        set_number = self.context.get('set_number', None)
+        queryset = obj.questions.all()
+        if set_number is not None:
+            try:
+                queryset = queryset.filter(set_number=int(set_number))
+            except (TypeError, ValueError):
+                pass
+        return QuestionSerializer(queryset, many=True, context=self.context).data
 
 
 class AssessmentSerializer(serializers.ModelSerializer):
@@ -92,7 +103,7 @@ class AssessmentSerializer(serializers.ModelSerializer):
     # Input/Output fields with custom names
     assessment_name = serializers.CharField(source='title')
     assessment_description = serializers.CharField(source='description', required=False, allow_blank=True)
-    set_number = serializers.IntegerField(write_only=True)
+    num_of_sets = serializers.IntegerField(source='total_sets', write_only=True)
     section_names = serializers.ListField(child=serializers.CharField(), write_only=True)
     section_descriptions = serializers.ListField(child=serializers.CharField(), write_only=True)
     is_electron_only = serializers.BooleanField(write_only=True)
@@ -105,14 +116,42 @@ class AssessmentSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'assessment_name', 'assessment_description', 'assessment_type', 
             'created_by', 'created_at', 'updated_at', 'is_active', 'is_published', 
-            'total_marks', 'passing_marks', 'duration', 'set_number', 'is_proctored', 
+            'total_marks', 'passing_marks', 'duration', 'is_proctored', 
             'start_time', 'end_time', 'is_electron_only', 'ai_generated_questions',
             'sections',
             # Write-only fields for input
             'num_of_sets', 'section_names', 'section_descriptions', 
             'num_of_ai_generated_questions', 'questions', 'attachments'
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at', 'created_by']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'created_by', 'total_marks']
+
+    def validate(self, attrs):
+        """Validate that $n references in question_text do not exceed attachments length (1-based)."""
+        attachments_from_input = attrs.get('attachments', None)
+        attachments_current = None
+        if getattr(self, 'instance', None) is not None:
+            attachments_current = getattr(self.instance, 'attachments', None)
+        attachments = attachments_from_input if attachments_from_input is not None else (attachments_current or [])
+        attachments_len = len(attachments) if isinstance(attachments, list) else 0
+
+        # Only validate when questions are provided (create or update with questions)
+        questions = attrs.get('questions', None)
+        if questions is None:
+            return attrs
+
+        errors = {}
+        for idx, q in enumerate(questions):
+            text = q.get('question_text', '') or ''
+            refs = [int(n) for n in re.findall(r"\$(\d+)", text)]
+            for n in refs:
+                if n < 1 or n > attachments_len:
+                    errors[idx] = f"question_text references ${n} but attachments length is {attachments_len}. Valid range is $1..${attachments_len if attachments_len>0 else 0}."
+                    break
+
+        if errors:
+            raise serializers.ValidationError({'questions': errors})
+
+        return attrs
 
     def calculate_total_marks_and_duration_by_set(self, questions_data):
         """Calculate total marks and duration for each set number"""
@@ -499,3 +538,17 @@ class TestCodeSubmissionSerializer(serializers.Serializer):
     token = serializers.CharField(max_length=500, help_text="JWT token containing test code")
     image = serializers.ImageField(help_text="Image file to upload")
     
+
+class GenerateStudentReportRequestSerializer(serializers.Serializer):
+    report_id = serializers.CharField(required=False)
+    assessment_id = serializers.IntegerField(required=False)
+    candidate_id = serializers.IntegerField(required=False)
+    candidate_email = serializers.EmailField(required=False)
+
+    def validate(self, attrs):
+        if not attrs.get('report_id') and not (attrs.get('assessment_id') and (attrs.get('candidate_id') or attrs.get('candidate_email'))):
+            raise serializers.ValidationError(
+                "Provide either report_id OR assessment_id with candidate_id/candidate_email"
+            )
+        return attrs
+

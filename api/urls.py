@@ -34,6 +34,7 @@ urlpatterns = [
     path('fileStatus/', views.CheckFileStatusView.as_view(), name = "check file status"),
     path('files/<int:assessment_id>', views.ListAssessmentFilesView.as_view(), name="get files for an assessment"),
     path('uploadStudentImage/', views.upload_student_image, name="upload student image for processing"), #proctoring module
+    path('reports/student', views.GenerateStudentReportView.as_view(), name='generate student report'),
     path('', include(router.urls)),
     
     #patch assessment work
