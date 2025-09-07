@@ -22,6 +22,9 @@ if not GOOGLE_OAUTH_CLIENT_ID:
     raise ValueError(
         'GOOGLE_OAUTH_CLIENT_ID is missing.'
     )
+
+# Gemini AI API Configuration
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', default='AIzaSyD0TnZBq6Cd6DWVxNg6iuqnEIjfxznLou0')
     
 EMAIL_BACKEND = 'django_ses.SESBackend'
 AWS_ACCESS_KEY_ID = os.environ.get('AWS_ACCESS_KEY_ID')

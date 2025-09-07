@@ -285,8 +285,9 @@ class AssessmentAssignment(models.Model):
 # --------- REPORT ----------
 class Report(models.Model):
     id = models.CharField(primary_key=True, max_length=50)
-    assignment = models.ForeignKey(AssessmentAssignment, on_delete=models.CASCADE, related_name="reports")
-    candidate = models.ForeignKey(User, on_delete=models.CASCADE, related_name="candidate_reports")
+    assignment = models.ForeignKey(AssessmentAssignment, on_delete=models.CASCADE, related_name="reports", null=True, blank=True)
+    candidate = models.ForeignKey(User, on_delete=models.CASCADE, related_name="candidate_reports", null=True, blank=True)
+    student = models.ForeignKey('Student', on_delete=models.CASCADE, related_name="student_reports", null=True, blank=True)  # NEW: Support for Students
     assessment = models.ForeignKey(Assessment, on_delete=models.CASCADE)
     started_at = models.DateTimeField(null=True, blank=True)
     ended_at = models.DateTimeField(null=True, blank=True)

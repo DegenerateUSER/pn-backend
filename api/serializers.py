@@ -1,5 +1,6 @@
 from botocore.client import Config
 import re
+import os
 from rest_framework import serializers
 from .models import *
 from django.contrib.auth.password_validation import validate_password
@@ -151,33 +152,142 @@ class AssessmentSerializer(serializers.ModelSerializer):
         if errors:
             raise serializers.ValidationError({'questions': errors})
 
+        # Validate section marks consistency and structure
+        self.validate_assessment_structure(attrs)
+
         return attrs
 
+    def validate_assessment_structure(self, attrs):
+        """
+        Validate assessment structure requirements:
+        1. Within each set, all sections should have the same net scoring potential
+        2. All sets should have the same section types (structure)
+        
+        Note: Net scoring potential = positive_marks + negative_marks for each question
+        """
+        questions = attrs.get('questions', [])
+        if not questions:
+            return
+
+        # Group questions by set and section
+        set_section_data = defaultdict(lambda: defaultdict(list))
+        
+        for question in questions:
+            set_number = question.get('set_number', 1)
+            section_id = question.get('section_id')
+            positive_marks = question.get('positive_marks', 0)
+            negative_marks = question.get('negative_marks', 0)
+            
+            # Calculate net scoring potential (positive + negative marks)
+            net_marks = positive_marks + negative_marks
+            set_section_data[set_number][section_id].append(net_marks)
+
+        # Calculate total marks per section PER SET using net scoring potential
+        set_section_totals = {}
+        for set_number, sections in set_section_data.items():
+            set_section_totals[set_number] = {}
+            for section_id, net_marks_list in sections.items():
+                set_section_totals[set_number][section_id] = sum(net_marks_list)
+
+        # Validation 1: Within each set, all sections should have the same net scoring potential
+        errors = {}
+        for set_number, section_totals in set_section_totals.items():
+            if not section_totals:
+                continue
+                
+            unique_totals = list(set(section_totals.values()))
+            if len(unique_totals) > 1:
+                section_details = []
+                for section_id, total in section_totals.items():
+                    section_details.append(f"Section {section_id}: {total} net marks")
+                
+                errors[f'set_{set_number}_marks_consistency'] = (
+                    f"All sections in set {set_number} must have the same net scoring potential. "
+                    f"Found different totals: {', '.join(section_details)}. "
+                    f"Please ensure all sections in the same set have equal net scoring potential (positive_marks + negative_marks)."
+                )
+
+        # Validation 2: All sets should have the same section structure
+        if len(set_section_totals) > 1:
+            # Get section IDs from the first set as reference
+            sets_list = sorted(set_section_totals.keys())
+            reference_set = sets_list[0]
+            reference_sections = set(set_section_totals[reference_set].keys())
+            
+            for set_number in sets_list[1:]:
+                current_sections = set(set_section_totals[set_number].keys())
+                
+                if reference_sections != current_sections:
+                    missing_in_current = reference_sections - current_sections
+                    extra_in_current = current_sections - reference_sections
+                    
+                    error_msg = f"Set {set_number} has different section structure than set {reference_set}. "
+                    if missing_in_current:
+                        error_msg += f"Missing sections: {sorted(missing_in_current)}. "
+                    if extra_in_current:
+                        error_msg += f"Extra sections: {sorted(extra_in_current)}. "
+                    error_msg += "All sets must have the same section types/structure."
+                    
+                    errors[f'set_{set_number}_structure_consistency'] = error_msg
+
+        # Validation 3: NEW - Ensure each section has consistent marks across sets
+        # This enforces that if section 1 has 50 marks in set 1, it should have 50 marks in set 2 too
+        if len(set_section_totals) > 1:
+            sets_list = sorted(set_section_totals.keys())
+            reference_set = sets_list[0]
+            reference_totals = set_section_totals[reference_set]
+            
+            for set_number in sets_list[1:]:
+                current_totals = set_section_totals[set_number]
+                
+                for section_id in reference_totals:
+                    if section_id in current_totals:
+                        ref_marks = reference_totals[section_id]
+                        curr_marks = current_totals[section_id]
+                        
+                        if ref_marks != curr_marks:
+                            errors[f'section_{section_id}_cross_set_consistency'] = (
+                                f"Section {section_id} has inconsistent net scoring potential across sets. "
+                                f"Set {reference_set}: {ref_marks} net marks, Set {set_number}: {curr_marks} net marks. "
+                                f"Each section must have the same net scoring potential (positive_marks + negative_marks) in every set."
+                            )
+
+        if errors:
+            raise serializers.ValidationError(errors)
+
     def calculate_total_marks_and_duration_by_set(self, questions_data):
-        """Calculate total marks and duration for each set number"""
+        """Calculate total net scoring potential and duration for each set number"""
         set_marks = defaultdict(int)
         set_duration = defaultdict(int)
         
         for question in questions_data:
             set_num = question.get('set_number', 1)
-            set_marks[set_num] += question.get('positive_marks', 0)
+            positive_marks = question.get('positive_marks', 0)
+            negative_marks = question.get('negative_marks', 0)
+            # Calculate net scoring potential
+            net_marks = positive_marks + negative_marks
+            set_marks[set_num] += net_marks
             set_duration[set_num] += question.get('time_limit', 0)
             
         return dict(set_marks), dict(set_duration)
 
     def calculate_section_totals(self, questions_data, section_id, set_marks, set_duration):
-        """Calculate total marks and duration for a specific section"""
+        """Calculate net scoring potential and duration for a specific section ACROSS ALL SETS"""
         section_questions = [q for q in questions_data if q.get('section_id') == section_id]
         
         if not section_questions:
             return 0, 0
             
-        # Get the set_number from the first question of this section
-        set_number = section_questions[0].get('set_number', 1)
+        # Calculate totals for this section's questions across ALL sets using net scoring potential
+        total_marks = 0
+        total_duration = 0
         
-        # Calculate totals for this section's questions only
-        total_marks = sum(q.get('positive_marks', 0) for q in section_questions)
-        total_duration = sum(q.get('time_limit', 0) for q in section_questions)
+        for question in section_questions:
+            positive_marks = question.get('positive_marks', 0)
+            negative_marks = question.get('negative_marks', 0)
+            net_marks = positive_marks + negative_marks
+            total_marks += net_marks
+            total_duration += question.get('time_limit', 0)
         
         return total_marks, total_duration
 
@@ -539,16 +649,364 @@ class TestCodeSubmissionSerializer(serializers.Serializer):
     image = serializers.ImageField(help_text="Image file to upload")
     
 
+class QuestionResponseSerializer(serializers.Serializer):
+    """Serializer for individual question response data"""
+    question_id = serializers.IntegerField()
+    is_attempted = serializers.BooleanField(default=False)
+    selected_option_index = serializers.IntegerField(required=False, allow_null=True)
+    code_answer = serializers.CharField(required=False, allow_blank=True)
+    is_correct = serializers.BooleanField()
+    marks_obtained = serializers.FloatField()
+    total_marks = serializers.FloatField()  # Required: total marks available for this question
+    time_spent = serializers.IntegerField(default=0)  # in seconds
+
+    def validate_question_id(self, value):
+        """Validate that question_id exists in database"""
+        from .models import Question
+        if not Question.objects.filter(id=value).exists():
+            raise ValidationError(f"Question with ID {value} does not exist")
+        return value
+
+    def validate(self, data):
+        """Cross-field validation"""
+        if data['marks_obtained'] > data['total_marks']:
+            raise ValidationError("Marks obtained cannot be greater than total marks")
+        return data
+
+
+class SectionResponseSerializer(serializers.Serializer):
+    """Serializer for section-wise performance data"""
+    section_id = serializers.IntegerField()
+    set_number = serializers.IntegerField()  # Required: set number
+    questions = QuestionResponseSerializer(many=True)
+    time_spent = serializers.IntegerField(default=0)  # total section time in seconds
+
+    def validate_section_id(self, value):
+        """Validate that section_id exists in database"""
+        from .models import Section
+        if not Section.objects.filter(id=value).exists():
+            raise ValidationError(f"Section with ID {value} does not exist")
+        return value
+
+    def validate_set_number(self, value):
+        """Validate set number is positive"""
+        if value < 1:
+            raise ValidationError("Set number must be positive")
+        return value
+
+    def validate(self, data):
+        """Validate section-question relationship"""
+        from .models import Question
+        section_id = data['section_id']
+        set_number = data['set_number']
+        
+        for question_data in data['questions']:
+            question_id = question_data['question_id']
+            try:
+                question = Question.objects.get(id=question_id)
+                if question.section_id != section_id:
+                    raise ValidationError(f"Question {question_id} does not belong to section {section_id}")
+                if question.set_number != set_number:
+                    raise ValidationError(f"Question {question_id} does not belong to set {set_number}")
+            except Question.DoesNotExist:
+                raise ValidationError(f"Question {question_id} does not exist")
+        
+        return data
+    
+
+class GenerateStudentReportSerializer(serializers.Serializer):
+    """
+    New clean serializer for generating student reports with actual performance data
+    """
+    # Student/User identification
+    assessment_id = serializers.IntegerField()
+    student_email = serializers.EmailField(required=False)
+    candidate_email = serializers.EmailField(required=False)
+    
+    # Test session data
+    started_at = serializers.DateTimeField()
+    ended_at = serializers.DateTimeField()
+    submitted_at = serializers.DateTimeField()
+    
+    # Performance data
+    sections = SectionResponseSerializer(many=True)
+    
+    # Optional proctoring data
+    window_switch_count = serializers.IntegerField(default=0)
+    is_cheating = serializers.BooleanField(default=False)
+    cheating_reason = serializers.CharField(required=False, allow_blank=True)
+    
+    def validate(self, attrs):
+        """Validate that either student_email or candidate_email is provided"""
+        if not attrs.get('student_email') and not attrs.get('candidate_email'):
+            raise serializers.ValidationError(
+                "Either student_email or candidate_email must be provided"
+            )
+        
+        # Ensure only one type of user is specified
+        if attrs.get('student_email') and attrs.get('candidate_email'):
+            raise serializers.ValidationError(
+                "Provide either student_email OR candidate_email, not both"
+            )
+            
+        return attrs
+
+
+# Keep the old serializer for backward compatibility (deprecated)
 class GenerateStudentReportRequestSerializer(serializers.Serializer):
+    """DEPRECATED: Use GenerateStudentReportSerializer instead"""
     report_id = serializers.CharField(required=False)
     assessment_id = serializers.IntegerField(required=False)
     candidate_id = serializers.IntegerField(required=False)
     candidate_email = serializers.EmailField(required=False)
+    student_email = serializers.EmailField(required=False)
 
     def validate(self, attrs):
-        if not attrs.get('report_id') and not (attrs.get('assessment_id') and (attrs.get('candidate_id') or attrs.get('candidate_email'))):
+        if not attrs.get('report_id') and not (attrs.get('assessment_id') and (attrs.get('candidate_id') or attrs.get('candidate_email') or attrs.get('student_email'))):
             raise serializers.ValidationError(
-                "Provide either report_id OR assessment_id with candidate_id/candidate_email"
+                "Provide either report_id OR assessment_id with candidate_id/candidate_email/student_email"
             )
         return attrs
 
+class RunCodeSerializer(serializers.Serializer):
+    """
+    Serializer for code execution request with validation
+    """
+    script = serializers.CharField(
+        help_text="The code to execute",
+        error_messages={
+            'required': 'Script is required',
+            'blank': 'Script cannot be empty'
+        }
+    )
+    language = serializers.CharField(
+        help_text="Programming language (e.g., python3, java, cpp, javascript, etc.)",
+        error_messages={
+            'required': 'Language is required',
+            'blank': 'Language cannot be empty'
+        }
+    )
+    versionIndex = serializers.CharField(
+        help_text="Language version index (e.g., '3' for Python 3, '0' for latest)",
+        error_messages={
+            'required': 'Version index is required',
+            'blank': 'Version index cannot be empty'
+        }
+    )
+    stdin = serializers.CharField(
+        required=False, 
+        allow_blank=True, 
+        default="",
+        help_text="Input for the program (optional)"
+    )
+    
+    def validate(self, attrs):
+        """
+        Validate the entire serializer data and check for JDoodle credentials
+        """
+        # Check for JDoodle credentials in environment variables
+        client_id = os.getenv('JDOODLE_CLIENT_ID')
+        client_secret = os.getenv('JDOODLE_SECRET_KEY')
+        
+        if not client_id:
+            raise ValidationError({
+                'configuration_error': 'JDOODLE_CLIENT_ID not found in environment variables'
+            })
+        
+        if not client_secret:
+            raise ValidationError({
+                'configuration_error': 'JDOODLE_SECRET_KEY not found in environment variables'
+            })
+        
+        # Validate client_id format (should be alphanumeric)
+        if not client_id.replace('-', '').replace('_', '').isalnum():
+            raise ValidationError({
+                'configuration_error': 'Invalid JDOODLE_CLIENT_ID format'
+            })
+        
+        return attrs
+    
+    def validate_script(self, value):
+        """
+        Validate script field
+        """
+        if not value or not value.strip():
+            raise ValidationError("Script cannot be empty or contain only whitespace")
+        
+        # Optional: Check script length (JDoodle has limits)
+        if len(value) > 50000:  # 50KB limit
+            raise ValidationError("Script is too long. Maximum length is 50,000 characters")
+        
+        return value.strip()
+    
+    def validate_language(self, value):
+        """
+        Validate language field
+        """
+        if not value or not value.strip():
+            raise ValidationError("Language cannot be empty")
+        
+        # List of supported languages (you can expand this)
+        supported_languages = [
+            'python3', 'python2', 'java', 'cpp', 'cpp14', 'cpp17',
+            'c', 'csharp', 'php', 'perl', 'ruby', 'go', 'scala',
+            'bash', 'sql', 'pascal', 'fsharp', 'clojure', 'haskell',
+            'lua', 'erlang', 'rust', 'dart', 'r', 'groovy', 'kotlin',
+            'swift', 'javascript', 'nodejs', 'coffeescript'
+        ]
+        
+        if value.lower() not in supported_languages:
+            raise ValidationError(
+                f"Unsupported language '{value}'. "
+                f"Supported languages: {', '.join(supported_languages[:10])}... "
+                f"(and {len(supported_languages)-10} more)"
+            )
+        
+        return value.lower()
+    
+    def validate_versionIndex(self, value):
+        """
+        Validate versionIndex field
+        """
+        if not value or not value.strip():
+            raise ValidationError("Version index cannot be empty")
+        
+        # Check if it's a valid number (most version indices are numeric)
+        if not value.isdigit():
+            raise ValidationError("Version index should be a numeric value")
+        
+        # Check reasonable range (most languages have version indices 0-10)
+        version_int = int(value)
+        if version_int < 0 or version_int > 20:
+            raise ValidationError("Version index should be between 0 and 20")
+        
+        return value
+    
+    def validate_stdin(self, value):
+        """
+        Validate stdin field
+        """
+        # Optional: Limit stdin size
+        if value and len(value) > 10000:  # 10KB limit for input
+            raise ValidationError("Input is too long. Maximum length is 10,000 characters")
+        
+        return value if value else ""
+    
+    
+class SubmitCodeSerializer(serializers.Serializer):
+    """
+    Serializer for code submission with test case validation
+    """
+    script = serializers.CharField(
+        help_text="The code to execute",
+        error_messages={
+            'required': 'Script is required',
+            'blank': 'Script cannot be empty'
+        }
+    )
+    language = serializers.CharField(
+        help_text="Programming language (e.g., python3, java, cpp, javascript, etc.)",
+        error_messages={
+            'required': 'Language is required',
+            'blank': 'Language cannot be empty'
+        }
+    )
+    versionIndex = serializers.CharField(
+        help_text="Language version index (e.g., '3' for Python 3, '0' for latest)",
+        error_messages={
+            'required': 'Version index is required',
+            'blank': 'Version index cannot be empty'
+        }
+    )
+    question_id = serializers.IntegerField(
+        help_text="ID of the question to validate against",
+        error_messages={
+            'required': 'Question ID is required'
+        }
+    )
+    
+    def validate(self, attrs):
+        """
+        Validate the entire serializer data and check for JDoodle credentials
+        """
+        # Check for JDoodle credentials in environment variables
+        client_id = os.getenv('JDOODLE_CLIENT_ID')
+        client_secret = os.getenv('JDOODLE_SECRET_KEY')
+        
+        if not client_id:
+            raise ValidationError({
+                'configuration_error': 'JDOODLE_CLIENT_ID not found in environment variables'
+            })
+        
+        if not client_secret:
+            raise ValidationError({
+                'configuration_error': 'JDOODLE_SECRET_KEY not found in environment variables'
+            })
+        
+        return attrs
+    
+    def validate_question_id(self, value):
+        """
+        Validate that the question exists and is a coding question
+        """
+        try:
+            question = Question.objects.get(id=value)
+        except Question.DoesNotExist:
+            raise ValidationError(f"Question with ID {value} does not exist")
+        
+        if question.question_type != 'coding':
+            raise ValidationError(f"Question with ID {value} is not a coding question")
+        
+        return value
+    
+    def validate_script(self, value):
+        """
+        Validate script field
+        """
+        if not value or not value.strip():
+            raise ValidationError("Script cannot be empty or contain only whitespace")
+        
+        if len(value) > 50000:  # 50KB limit
+            raise ValidationError("Script is too long. Maximum length is 50,000 characters")
+        
+        return value.strip()
+    
+    def validate_language(self, value):
+        """
+        Validate language field
+        """
+        if not value or not value.strip():
+            raise ValidationError("Language cannot be empty")
+        
+        supported_languages = [
+            'python3', 'python2', 'java', 'cpp', 'cpp14', 'cpp17',
+            'c', 'csharp', 'php', 'perl', 'ruby', 'go', 'scala',
+            'bash', 'sql', 'pascal', 'fsharp', 'clojure', 'haskell',
+            'lua', 'erlang', 'rust', 'dart', 'r', 'groovy', 'kotlin',
+            'swift', 'javascript', 'nodejs', 'coffeescript'
+        ]
+        
+        if value.lower() not in supported_languages:
+            raise ValidationError(
+                f"Unsupported language '{value}'. "
+                f"Supported languages: {', '.join(supported_languages[:10])}... "
+                f"(and {len(supported_languages)-10} more)"
+            )
+        
+        return value.lower()
+    
+    def validate_versionIndex(self, value):
+        """
+        Validate versionIndex field
+        """
+        if not value or not value.strip():
+            raise ValidationError("Version index cannot be empty")
+        
+        if not value.isdigit():
+            raise ValidationError("Version index should be a numeric value")
+        
+        version_int = int(value)
+        if version_int < 0 or version_int > 20:
+            raise ValidationError("Version index should be between 0 and 20")
+        
+        return value

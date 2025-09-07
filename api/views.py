@@ -25,6 +25,7 @@ from .models import Assessment, Section, Question
 from .serializers import *
 
 import json
+import requests as req
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -602,6 +603,60 @@ class AssessmentViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+    @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
+    def all_assessments(self, request):
+        """Admin endpoint to view all assessments (for debugging/admin purposes)"""
+        # Check if user is admin or has appropriate role
+        if not request.user.role in ['admin', 'assessment_manager']:
+            return Response(
+                {'error': 'Permission denied. Admin access required.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        try:
+            # Get ALL assessments regardless of creator
+            all_assessments = Assessment.objects.all().select_related('created_by')
+            
+            # Apply optional filters
+            assessment_type = request.query_params.get('type', None)
+            is_published = request.query_params.get('is_published', None)
+            search = request.query_params.get('search', None)
+            
+            if assessment_type:
+                all_assessments = all_assessments.filter(assessment_type=assessment_type)
+            if is_published is not None:
+                all_assessments = all_assessments.filter(is_published=is_published.lower() == 'true')
+            if search:
+                all_assessments = all_assessments.filter(title__icontains=search)
+            
+            # Paginate results
+            paginator = self.pagination_class()
+            page = paginator.paginate_queryset(all_assessments, request)
+            
+            if page is not None:
+                serializer = self.get_serializer(page, many=True)
+                return paginator.get_paginated_response({
+                    'message': 'All assessments retrieved successfully',
+                    'total_count': all_assessments.count(),
+                    'data': serializer.data
+                })
+            
+            serializer = self.get_serializer(all_assessments, many=True)
+            return Response({
+                'message': 'All assessments retrieved successfully',
+                'total_count': all_assessments.count(),
+                'data': serializer.data
+            })
+            
+        except Exception as e:
+            return Response(
+                {
+                    'error': 'Failed to retrieve assessments',
+                    'details': str(e)
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
 class StudentCSVUploadView(APIView):
     """
     API endpoint to upload CSV file containing student data (name, email)
@@ -812,18 +867,19 @@ class UserViewSet(viewsets.ModelViewSet):
             'errors': serializer.errors
         }, status=status.HTTP_400_BAD_REQUEST)
 
-class StudentViewSet(viewsets.ReadOnlyModelViewSet):
+class StudentViewSet(viewsets.ModelViewSet):
     queryset = Student.objects.all()
     serializer_class = StudentSerializer
     permission_classes = [IsAuthenticated]
 
 
 
-class CSVUploadViewSet(viewsets.ReadOnlyModelViewSet):
+class CSVUploadViewSet(viewsets.ModelViewSet):
     """
-    ViewSet for viewing CSV uploads.
-    GET /api/csv-uploads/ - List all uploads
-    GET /api/csv-uploads/{id}/ - Get specific upload
+    ViewSet for managing CSV uploads.
+    GET /api/students-list/ - List all uploads
+    GET /api/students-list/{id}/ - Get specific upload
+    DELETE /api/students-list/{id}/ - Delete specific upload
     """
     serializer_class = CSVUploadModelSerializer
     permission_classes = [IsAuthenticated]
@@ -1682,10 +1738,91 @@ class GenerateStudentReportView(APIView):
     """
     Generate a comprehensive student report for an assessment attempt and
     optionally analyze weaknesses using Gemini (if GEMINI_API_KEY is set).
+    Supports both User and Student-based reports.
     """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        # Check if this is the new enhanced format or legacy format
+        if 'sections' in request.data:
+            # NEW: Enhanced format with actual performance data
+            return self._handle_enhanced_request(request)
+        else:
+            # LEGACY: Simple format for backward compatibility
+            return self._handle_legacy_request(request)
+    
+    def _handle_enhanced_request(self, request):
+        """Handle new enhanced request with actual performance data"""
+        serializer = GenerateStudentReportSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response({
+                'error': 'Invalid data provided',
+                'details': serializer.errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        data = serializer.validated_data
+        
+        try:
+            # Get assessment
+            assessment = Assessment.objects.select_related().get(id=data['assessment_id'])
+            
+            # Get student or user
+            student = None
+            candidate = None
+            
+            if data.get('student_email'):
+                student = Student.objects.get(email=data['student_email'])
+                participant_type = 'student'
+            else:
+                candidate = User.objects.get(email=data['candidate_email'])
+                participant_type = 'user'
+            
+            # Calculate report metrics from real data
+            report_data = self._calculate_report_metrics(data, assessment)
+            
+            # Create report record
+            report = self._create_report_record(
+                assessment, student, candidate, data, report_data
+            )
+            
+            # Generate comprehensive response
+            response_data = self._generate_enhanced_response(
+                report, assessment, student, candidate, report_data, data
+            )
+            
+            return Response({
+                'message': 'Student report generated successfully',
+                'report_id': report.id,
+                'participant_type': participant_type,
+                **response_data
+            }, status=status.HTTP_201_CREATED)
+            
+        except Assessment.DoesNotExist:
+            return Response({
+                'error': 'Assessment not found',
+                'assessment_id': data['assessment_id']
+            }, status=status.HTTP_404_NOT_FOUND)
+            
+        except Student.DoesNotExist:
+            return Response({
+                'error': 'Student not found',
+                'email': data.get('student_email')
+            }, status=status.HTTP_404_NOT_FOUND)
+            
+        except User.DoesNotExist:
+            return Response({
+                'error': 'User not found',
+                'email': data.get('candidate_email')
+            }, status=status.HTTP_404_NOT_FOUND)
+            
+        except Exception as e:
+            return Response({
+                'error': 'Failed to generate report',
+                'details': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def _handle_legacy_request(self, request):
+        """Handle legacy request format for backward compatibility"""
         req = GenerateStudentReportRequestSerializer(data=request.data)
         if not req.is_valid():
             return Response({'error': 'Invalid data', 'details': req.errors}, status=status.HTTP_400_BAD_REQUEST)
@@ -1696,20 +1833,36 @@ class GenerateStudentReportView(APIView):
         report = None
         try:
             if data.get('report_id'):
-                report = Report.objects.select_related('assessment', 'candidate').get(id=data['report_id'])
+                report = Report.objects.select_related('assessment', 'candidate', 'student').get(id=data['report_id'])
             else:
                 assessment = Assessment.objects.get(id=data['assessment_id'])
-                candidate = None
-                if data.get('candidate_id'):
-                    candidate = User.objects.get(id=data['candidate_id'])
-                elif data.get('candidate_email'):
-                    candidate = User.objects.get(email=data['candidate_email'])
-                report = Report.objects.select_related('assessment', 'candidate').filter(
-                    assessment=assessment, candidate=candidate
-                ).order_by('-submitted_at', '-ended_at', '-started_at').first()
+                
+                # Handle Student-based reports (NEW)
+                if data.get('student_email'):
+                    student = Student.objects.get(email=data['student_email'])
+                    report = Report.objects.select_related('assessment', 'student').filter(
+                        assessment=assessment, student=student
+                    ).order_by('-submitted_at', '-ended_at', '-started_at').first()
+                    
+                    # If no report exists, create a mock report for demonstration
+                    if not report:
+                        report = self._create_mock_student_report(assessment, student)
+                        
+                # Handle User-based reports (EXISTING)
+                else:
+                    candidate = None
+                    if data.get('candidate_id'):
+                        candidate = User.objects.get(id=data['candidate_id'])
+                    elif data.get('candidate_email'):
+                        candidate = User.objects.get(email=data['candidate_email'])
+                    report = Report.objects.select_related('assessment', 'candidate').filter(
+                        assessment=assessment, candidate=candidate
+                    ).order_by('-submitted_at', '-ended_at', '-started_at').first()
+                    
                 if not report:
                     return Response({'error': 'Report not found for candidate and assessment'}, status=status.HTTP_404_NOT_FOUND)
-        except (Report.DoesNotExist, Assessment.DoesNotExist, User.DoesNotExist):
+                    
+        except (Report.DoesNotExist, Assessment.DoesNotExist, User.DoesNotExist, Student.DoesNotExist):
             return Response({'error': 'Specified entities not found'}, status=status.HTTP_404_NOT_FOUND)
 
         # Load attempts with question context
@@ -1719,6 +1872,14 @@ class GenerateStudentReportView(APIView):
         total_marks_assessment = assessment.total_marks or 0
         obtained_marks_report = report.obtained_marks if report.obtained_marks is not None else None
         obtained_marks = obtained_marks_report if obtained_marks_report is not None else sum((a.marks_obtained or 0) for a in attempts)
+
+        # Compute negative penalties and questions left
+        negative_scored = sum(
+            -(a.marks_obtained or 0)
+            for a in attempts
+            if bool(a.is_attempted) and not bool(a.is_correct) and (a.marks_obtained or 0) < 0
+        )
+        questions_left = sum(1 for a in attempts if not bool(a.is_attempted))
 
         # Per-section breakdown
         sections = list(assessment.sections.all())
@@ -1739,8 +1900,11 @@ class GenerateStudentReportView(APIView):
             'non-coding': {'attempted': 0, 'correct': 0, 'wrong': 0, 'marks_obtained': 0}
         }
 
-        # Question details
+        # Question details and topic breakdown
         question_details = []
+        topics_correct = {}
+        topics_negative = {}
+        topics_left = {}
 
         for a in attempts:
             q = a.question
@@ -1757,6 +1921,15 @@ class GenerateStudentReportView(APIView):
                     if a.is_attempted:
                         section_stats[sec.id]['wrong'] += 1
                 section_stats[sec.id]['marks_obtained'] += (a.marks_obtained or 0)
+
+            # Topic aggregation keyed by section name
+            section_name = sec.name if sec else 'Unknown'
+            if bool(a.is_attempted) and bool(a.is_correct):
+                topics_correct.setdefault(section_name, []).append(q.id)
+            elif bool(a.is_attempted) and not bool(a.is_correct):
+                topics_negative.setdefault(section_name, []).append(q.id)
+            elif not bool(a.is_attempted):
+                topics_left.setdefault(section_name, []).append(q.id)
 
             qtype = (q.question_type or 'non-coding')
             if qtype in type_stats:
@@ -1793,8 +1966,10 @@ class GenerateStudentReportView(APIView):
         summary = {
             'report_id': report.id,
             'candidate': {
-                'id': report.candidate.id,
-                'email': report.candidate.email,
+                'id': report.candidate.id if report.candidate else report.student.id,
+                'email': report.candidate.email if report.candidate else report.student.email,
+                'name': getattr(report.candidate, 'full_name', None) if report.candidate else report.student.full_name,
+                'type': 'user' if report.candidate else 'student'
             },
             'assessment': {
                 'id': assessment.id,
@@ -1804,11 +1979,19 @@ class GenerateStudentReportView(APIView):
             },
             'score': {
                 'marks_scored': obtained_marks,
+                'total_marks': total_marks_assessment,
                 'percentage': percentage,
+                'negative_scored': negative_scored,
+                'questions_left': questions_left,
             },
             'by_section': list(section_stats.values()),
             'by_type': type_stats,
             'questions': question_details,
+            'topics_breakdown': {
+                'correct_by_topic': topics_correct,
+                'negative_by_topic': topics_negative,
+                'left_by_topic': topics_left,
+            }
         }
 
         # Optional Gemini analysis
@@ -1822,9 +2005,10 @@ class GenerateStudentReportView(APIView):
                     genai.configure(api_key=api_key)
                     model = genai.GenerativeModel('gemini-1.5-flash')
                     prompt = (
-                        "You are an education analyst. Given this JSON with a student's assessment performance, "
-                        "identify the weakest areas (by section and by question_type), explain why, and provide 5 concise, actionable tips to improve. "
-                        "Respond in JSON with keys: weak_areas (array of {area, reason}), improvement_tips (array of strings).\n\n"
+                        "You are an education analyst. Given this JSON with a student's assessment performance and topics breakdown, "
+                        "identify the student's weak topics and explain why. Use both accuracy and negative scoring signals. "
+                        "Provide: weak_topics (array of {topic, reason}), quick_tips (5 concise bullet tips), and study_plan (3-5 steps). "
+                        "Respond in JSON only with keys: weak_topics, quick_tips, study_plan.\n\n"
                         f"DATA: {json.dumps(summary)}"
                     )
                     res = model.generate_content(prompt)
@@ -1853,3 +2037,754 @@ class GenerateStudentReportView(APIView):
         }
 
         return Response(response, status=status.HTTP_200_OK)
+    
+    def _create_mock_student_report(self, assessment, student):
+        """Create a mock report for demonstration when no actual report exists for a student"""
+        from django.utils import timezone
+        
+        # Create a mock report for the student
+        report = Report.objects.create(
+            assessment=assessment,
+            student=student,
+            started_at=timezone.now(),
+            ended_at=timezone.now(),
+            submitted_at=timezone.now(),
+            obtained_marks=0,
+            status='completed'
+        )
+        
+        return report
+
+    def _calculate_report_metrics(self, data, assessment):
+        """Calculate comprehensive metrics from actual performance data"""
+        sections_data = data['sections']
+        total_marks = 0
+        total_obtained = 0
+        total_questions = 0
+        total_attempted = 0
+        total_correct = 0
+        total_wrong = 0
+        total_time_spent = 0
+        
+        section_stats = []
+        question_details = []
+        
+        # Create a mapping of section IDs to section names from the assessment
+        section_name_map = {section.id: section.name for section in assessment.sections.all()}
+        
+        for section_data in sections_data:
+            section_id = section_data['section_id']
+            section_name = section_name_map.get(section_id, f"Section {section_id}")
+            
+            section_marks = 0
+            section_obtained = 0
+            section_questions = len(section_data['questions'])
+            section_attempted = 0
+            section_correct = 0
+            section_wrong = 0
+            section_time = section_data.get('time_spent', 0)
+            
+            for question_data in section_data['questions']:
+                # Get marks from request (now required)
+                question_marks = question_data.get('total_marks', 0)
+                obtained_marks = question_data.get('marks_obtained', 0)
+                is_attempted = question_data.get('is_attempted', False)
+                is_correct = question_data.get('is_correct', False)
+                time_spent = question_data.get('time_spent', 0)
+                
+                section_marks += question_marks
+                section_obtained += obtained_marks
+                
+                if is_attempted:
+                    section_attempted += 1
+                    if is_correct:
+                        section_correct += 1
+                    else:
+                        section_wrong += 1
+                
+                # Store question details
+                question_details.append({
+                    'question_id': question_data.get('question_id'),
+                    'section_id': section_id,
+                    'section_name': section_name,
+                    'set_number': section_data.get('set_number', 1),
+                    'question_text': question_data.get('question_text', ''),
+                    'total_marks': question_marks,
+                    'marks_obtained': obtained_marks,
+                    'is_attempted': is_attempted,
+                    'is_correct': is_correct,
+                    'time_spent_seconds': time_spent,
+                    'selected_option': question_data.get('selected_option'),
+                    'correct_option': question_data.get('correct_option')
+                })
+            
+            total_marks += section_marks
+            total_obtained += section_obtained
+            total_questions += section_questions
+            total_attempted += section_attempted
+            total_correct += section_correct
+            total_wrong += section_wrong
+            total_time_spent += section_time
+            
+            # Store section stats
+            section_stats.append({
+                'section_id': section_id,
+                'section_name': section_name,
+                'set_number': section_data.get('set_number', 1),
+                'total_questions': section_questions,
+                'attempted': section_attempted,
+                'correct': section_correct,
+                'wrong': section_wrong,
+                'marks_obtained': section_obtained,
+                'total_marks': section_marks,
+                'time_spent_seconds': section_time,
+                'accuracy': round((section_correct / section_attempted * 100), 2) if section_attempted > 0 else 0
+            })
+        
+        # Calculate overall metrics
+        percentage = round((total_obtained / total_marks * 100), 2) if total_marks > 0 else 0
+        accuracy = round((total_correct / total_attempted * 100), 2) if total_attempted > 0 else 0
+        questions_left = total_questions - total_attempted
+        
+        return {
+            'total_marks': total_marks,
+            'total_obtained': total_obtained,
+            'percentage': percentage,
+            'total_questions': total_questions,
+            'total_attempted': total_attempted,
+            'total_correct': total_correct,
+            'total_wrong': total_wrong,
+            'questions_left': questions_left,
+            'accuracy': accuracy,
+            'total_time_spent': total_time_spent,
+            'section_stats': section_stats,
+            'question_details': question_details
+        }
+
+    def _create_report_record(self, assessment, student, candidate, request_data, report_data):
+        """Create a new report record in the database"""
+        from django.utils import timezone
+        import uuid
+        
+        # Generate a unique ID for the report
+        report_id = str(uuid.uuid4())
+        
+        report = Report.objects.create(
+            id=report_id,
+            assessment=assessment,
+            student=student,
+            candidate=candidate,
+            started_at=request_data.get('started_at'),
+            ended_at=request_data.get('ended_at'),
+            submitted_at=request_data.get('submitted_at'),
+            total_marks=report_data['total_marks'],
+            obtained_marks=report_data['total_obtained'],
+            percentage=report_data['percentage'],
+            percentile=0.0,  # Default value, can be calculated later if needed
+            status='completed'
+        )
+        
+        return report
+
+    def _generate_enhanced_response(self, report, assessment, student, candidate, report_data, request_data):
+        """Generate comprehensive response with all metrics and analysis"""
+        participant_info = {
+            'id': student.id if student else candidate.id,
+            'email': student.email if student else candidate.email,
+            'name': student.full_name if student else getattr(candidate, 'full_name', candidate.email),
+            'type': 'student' if student else 'user'
+        }
+        
+        # Enhanced performance analysis
+        performance_analysis = self._analyze_performance(report_data)
+        
+        # Time analysis
+        time_analysis = self._analyze_time_management(report_data, assessment)
+        
+        # Generate Gemini AI tips for the student
+        ai_tips = self._generate_ai_tips(report_data, assessment, participant_info)
+        
+        return {
+            'summary': {
+                'total_marks': report_data['total_marks'],
+                'marks_obtained': report_data['total_obtained'],
+                'percentage': report_data['percentage'],
+                'accuracy': report_data['accuracy'],
+                'total_questions': report_data['total_questions'],
+                'attempted': report_data['total_attempted'],
+                'correct': report_data['total_correct'],
+                'wrong': report_data['total_wrong'],
+                'not_attempted': report_data['questions_left'],
+                'total_time_spent_seconds': report_data['total_time_spent']
+            },
+            'participant': participant_info,
+            'assessment': {
+                'id': assessment.id,
+                'title': assessment.title,
+                'description': assessment.description,
+                'total_marks': assessment.total_marks,
+                'duration': assessment.duration
+            },
+            'sections': report_data['section_stats'],
+            'questions': report_data['question_details'],
+            'performance_analysis': performance_analysis,
+            'time_analysis': time_analysis,
+            'recommendations': self._generate_recommendations(report_data),
+            'ai_tips': ai_tips  # New: Gemini AI-powered tips
+        }
+
+    def _analyze_performance(self, report_data):
+        """Analyze performance patterns and provide insights"""
+        analysis = {
+            'grade': self._calculate_grade(report_data['percentage']),
+            'performance_level': self._get_performance_level(report_data['percentage']),
+            'strength_areas': [],
+            'improvement_areas': [],
+            'consistency': self._calculate_consistency(report_data['section_stats'])
+        }
+        
+        # Identify strong and weak sections
+        for section in report_data['section_stats']:
+            if section['accuracy'] >= 80:
+                analysis['strength_areas'].append({
+                    'section': section['section_name'],
+                    'accuracy': section['accuracy'],
+                    'score': f"{section['marks_obtained']}/{section['total_marks']}"
+                })
+            elif section['accuracy'] < 50 and section['attempted'] > 0:
+                analysis['improvement_areas'].append({
+                    'section': section['section_name'],
+                    'accuracy': section['accuracy'],
+                    'score': f"{section['marks_obtained']}/{section['total_marks']}"
+                })
+        
+        return analysis
+
+    def _analyze_time_management(self, report_data, assessment):
+        """Analyze time management patterns"""
+        total_time_available = assessment.duration * 60  # Convert to seconds
+        time_used = report_data['total_time_spent']
+        time_efficiency = (time_used / total_time_available * 100) if total_time_available > 0 else 0
+        
+        return {
+            'time_used_seconds': time_used,
+            'time_available_seconds': total_time_available,
+            'time_efficiency_percentage': round(time_efficiency, 2),
+            'average_time_per_question': round(time_used / report_data['total_attempted'], 2) if report_data['total_attempted'] > 0 else 0,
+            'time_management_rating': self._get_time_management_rating(time_efficiency)
+        }
+
+    def _calculate_grade(self, percentage):
+        """Calculate letter grade based on percentage"""
+        if percentage >= 90:
+            return 'A+'
+        elif percentage >= 80:
+            return 'A'
+        elif percentage >= 70:
+            return 'B+'
+        elif percentage >= 60:
+            return 'B'
+        elif percentage >= 50:
+            return 'C'
+        elif percentage >= 40:
+            return 'D'
+        else:
+            return 'F'
+
+    def _get_performance_level(self, percentage):
+        """Get performance level description"""
+        if percentage >= 85:
+            return 'Excellent'
+        elif percentage >= 70:
+            return 'Good'
+        elif percentage >= 55:
+            return 'Average'
+        elif percentage >= 40:
+            return 'Below Average'
+        else:
+            return 'Poor'
+
+    def _calculate_consistency(self, section_stats):
+        """Calculate performance consistency across sections"""
+        if not section_stats:
+            return 0
+        
+        accuracies = [s['accuracy'] for s in section_stats if s['attempted'] > 0]
+        if not accuracies:
+            return 0
+        
+        avg_accuracy = sum(accuracies) / len(accuracies)
+        variance = sum((acc - avg_accuracy) ** 2 for acc in accuracies) / len(accuracies)
+        consistency_score = max(0, 100 - variance)  # Higher score = more consistent
+        
+        return round(consistency_score, 2)
+
+    def _get_time_management_rating(self, time_efficiency):
+        """Rate time management efficiency"""
+        if time_efficiency <= 70:
+            return 'Excellent - Efficient use of time'
+        elif time_efficiency <= 85:
+            return 'Good - Well managed'
+        elif time_efficiency <= 95:
+            return 'Average - Could be more efficient'
+        else:
+            return 'Poor - Time management needs improvement'
+
+    def _generate_recommendations(self, report_data):
+        """Generate personalized recommendations based on performance"""
+        recommendations = []
+        
+        # Accuracy-based recommendations
+        if report_data['accuracy'] < 60:
+            recommendations.append("Focus on understanding concepts better before attempting questions")
+        
+        # Attempt rate recommendations
+        attempt_rate = (report_data['total_attempted'] / report_data['total_questions']) * 100
+        if attempt_rate < 80:
+            recommendations.append("Try to attempt more questions to maximize your score potential")
+        
+        # Section-specific recommendations
+        weak_sections = [s for s in report_data['section_stats'] if s['accuracy'] < 50 and s['attempted'] > 0]
+        if weak_sections:
+            section_names = ', '.join([s['section_name'] for s in weak_sections])
+            recommendations.append(f"Review and practice more in: {section_names}")
+        
+        # Time management recommendations
+        avg_time_per_question = report_data['total_time_spent'] / report_data['total_attempted'] if report_data['total_attempted'] > 0 else 0
+        if avg_time_per_question > 120:  # More than 2 minutes per question
+            recommendations.append("Work on improving your speed while maintaining accuracy")
+        
+        return recommendations
+
+    def _generate_ai_tips(self, report_data, assessment, participant_info):
+        """Generate personalized AI-powered tips using Gemini"""
+        try:
+            import google.generativeai as genai
+            from django.conf import settings
+            
+            # Configure Gemini
+            api_key = getattr(settings, 'GEMINI_API_KEY', None)
+            if not api_key:
+                return {
+                    'available': False,
+                    'message': 'AI tips not available - API key not configured',
+                    'tips': []
+                }
+            
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel('gemini-2.5-flash')
+            
+            # Prepare performance summary for AI analysis
+            performance_summary = {
+                'percentage': report_data['percentage'],
+                'accuracy': report_data['accuracy'],
+                'total_questions': report_data['total_questions'],
+                'attempted': report_data['total_attempted'],
+                'correct': report_data['total_correct'],
+                'wrong': report_data['total_wrong'],
+                'sections': [{
+                    'name': section['section_name'],
+                    'accuracy': section['accuracy'],
+                    'attempted': section['attempted'],
+                    'total_questions': section['total_questions']
+                } for section in report_data['section_stats']]
+            }
+            
+            # Create prompt for Gemini
+            prompt = f"""
+            You are an educational AI assistant helping a student improve their performance. 
+            
+            Student Details:
+            - Name: {participant_info['name']}
+            - Assessment: {assessment.title}
+            
+            Performance Summary:
+            - Overall Score: {report_data['percentage']:.1f}%
+            - Accuracy: {report_data['accuracy']:.1f}%
+            - Questions Attempted: {report_data['total_attempted']}/{report_data['total_questions']}
+            - Correct Answers: {report_data['total_correct']}
+            - Wrong Answers: {report_data['total_wrong']}
+            
+            Section-wise Performance:
+            {chr(10).join([f"- {section['section_name']}: {section['accuracy']:.1f}% accuracy ({section['attempted']}/{section['total_questions']} attempted)" for section in report_data['section_stats']])}
+            
+            Based on this performance data, provide:
+            1. 3-5 specific, actionable study tips
+            2. Areas of strength to maintain
+            3. Areas needing improvement with concrete steps
+            4. Motivational message based on their performance level
+            
+            Keep the response encouraging, specific, and practical. Format as a JSON with keys: strengths, improvements, study_tips, motivation
+            """
+            
+            response = model.generate_content(prompt)
+            
+            # Try to parse JSON response, fallback to structured text
+            try:
+                import json
+                ai_response = json.loads(response.text)
+            except:
+                # Fallback: structure the response manually
+                ai_response = {
+                    'strengths': ['Completed the assessment'],
+                    'improvements': ['Continue practicing'],
+                    'study_tips': [response.text[:500] + '...' if len(response.text) > 500 else response.text],
+                    'motivation': 'Keep working hard and you will improve!'
+                }
+            
+            return {
+                'available': True,
+                'generated_by': 'Gemini AI',
+                'tips': ai_response
+            }
+            
+        except Exception as e:
+            return {
+                'available': False,
+                'error': f'Failed to generate AI tips: {str(e)}',
+                'tips': {
+                    'study_tips': ['Review your incorrect answers', 'Practice more questions in weak areas'],
+                    'motivation': 'Every mistake is a learning opportunity!'
+                }
+            }
+        
+class RunCodeView(APIView):
+    """
+    API endpoint to execute code using JDoodle API
+    """
+    permission_classes = [AllowAny]
+    
+    def post(self, request):
+        # Validate input data using serializer
+        serializer = RunCodeSerializer(data=request.data)
+        
+        if not serializer.is_valid():
+            return Response(
+                {'errors': serializer.errors}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Get validated data
+        validated_data = serializer.validated_data
+        
+        # Get JDoodle credentials from environment variables
+        # (Already validated in serializer)
+        client_id = os.getenv('JDOODLE_CLIENT_ID')
+        client_secret = os.getenv('JDOODLE_SECRET_KEY')
+        
+        # Prepare payload for JDoodle API
+        payload = {
+            "clientId": client_id,
+            "clientSecret": client_secret,
+            "script": validated_data['script'],
+            "stdin": validated_data.get('stdin', ''),
+            "language": validated_data['language'],
+            "versionIndex": validated_data['versionIndex'],
+            "compileOnly": False
+        }
+        
+        try:
+            # Make request to JDoodle API
+            response = req.post(
+                "https://api.jdoodle.com/v1/execute",
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=30  # 30 second timeout
+            )
+            
+            # Check if request was successful
+            response.raise_for_status()
+            
+            # Get response data
+            jdoodle_response = response.json()
+            
+            # Remove unwanted fields from response
+            filtered_response = {
+                key: value for key, value in jdoodle_response.items() 
+                if key not in ['projectKey', 'isCompiled']
+            }
+            
+            return Response(filtered_response, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            print(e)
+            return Response(
+                {'error': 'Internal server error'}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+            
+            
+class SubmitCodeView(APIView):
+    """
+    API endpoint to submit code and validate against test cases
+    """
+    permission_classes = [AllowAny]
+    
+    def post(self, request):
+        # Get query parameter for test type
+        test_type = request.query_params.get('type', 'example').lower()
+        
+        if test_type not in ['example', 'all']:
+            return Response(
+                {'error': 'Invalid test type. Use "example" or "all"'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validate input data using serializer
+        serializer = SubmitCodeSerializer(data=request.data)
+        
+        if not serializer.is_valid():
+            return Response(
+                {'errors': serializer.errors}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        validated_data = serializer.validated_data
+        question_id = validated_data['question_id']
+        
+        # Get the question object
+        try:
+            question = Question.objects.get(id=question_id)
+        except Question.DoesNotExist:
+            return Response(
+                {'error': f'Question with ID {question_id} not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Check if it's a coding question (already validated in serializer, but double-check)
+        if question.question_type != 'coding':
+            return Response(
+                {'error': 'This question is not a coding question'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Get test cases from question
+        test_cases_data = question.test_cases
+        
+        if not test_cases_data:
+            return Response(
+                {'error': 'No test cases found for this question'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Select test cases based on query parameter
+        if test_type == 'example':
+            test_cases = test_cases_data.get('examples', [])
+        else:  # test_type == 'all'
+            test_cases = test_cases_data.get('hidden', [])
+        
+        if not test_cases:
+            return Response(
+                {'error': f'No {test_type} test cases found for this question'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Execute code against test cases
+        result = self.run_test_cases(validated_data, test_cases)
+        
+        return Response(result, status=status.HTTP_200_OK)
+    
+    def run_test_cases(self, validated_data, test_cases):
+        """
+        Run the submitted code against test cases
+        """
+        # Get JDoodle credentials
+        client_id = os.getenv('JDOODLE_CLIENT_ID')
+        client_secret = os.getenv('JDOODLE_SECRET_KEY')
+        
+        passed_count = 0
+        failed_count = 0
+        test_results = []
+        
+        for i, test_case in enumerate(test_cases):
+            input_data = test_case.get('input', '')
+            expected_output = test_case.get('output', '').strip()
+            
+            # Prepare payload for JDoodle API
+            payload = {
+                "clientId": client_id,
+                "clientSecret": client_secret,
+                "script": validated_data['script'],
+                "stdin": input_data,
+                "language": validated_data['language'],
+                "versionIndex": validated_data['versionIndex'],
+                "compileOnly": False
+            }
+            
+            try:
+                # Make request to JDoodle API
+                response = req.post(
+                    "https://api.jdoodle.com/v1/execute",
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=30
+                )
+                
+                response.raise_for_status()
+                jdoodle_response = response.json()
+                
+                # Check if execution was successful
+                if not jdoodle_response.get('isExecutionSuccess', False):
+                    failed_count += 1
+                    test_results.append({
+                        'test_case_number': i + 1,
+                        'input': input_data,
+                        'expected_output': expected_output,
+                        'actual_output': None,
+                        'passed': False,
+                        'error': jdoodle_response.get('error', 'Execution failed'),
+                        'execution_time': jdoodle_response.get('cpuTime', 'N/A'),
+                        'memory_used': jdoodle_response.get('memory', 'N/A')
+                    })
+                    continue
+                
+                # Get actual output and clean it
+                actual_output = jdoodle_response.get('output', '').strip()
+                
+                # Compare outputs
+                is_passed = actual_output == expected_output
+                
+                if is_passed:
+                    passed_count += 1
+                else:
+                    failed_count += 1
+                
+                test_results.append({
+                    'test_case_number': i + 1,
+                    'input': input_data,
+                    'expected_output': expected_output,
+                    'actual_output': actual_output,
+                    'passed': is_passed,
+                    'error': jdoodle_response.get('error'),
+                    'execution_time': jdoodle_response.get('cpuTime', 'N/A'),
+                    'memory_used': jdoodle_response.get('memory', 'N/A')
+                })
+                
+            except requests.exceptions.Timeout:
+                failed_count += 1
+                test_results.append({
+                    'test_case_number': i + 1,
+                    'input': input_data,
+                    'expected_output': expected_output,
+                    'actual_output': None,
+                    'passed': False,
+                    'error': 'Execution timeout',
+                    'execution_time': 'Timeout',
+                    'memory_used': 'N/A'
+                })
+                
+            except Exception as e:
+                failed_count += 1
+                test_results.append({
+                    'test_case_number': i + 1,
+                    'input': input_data,
+                    'expected_output': expected_output,
+                    'actual_output': None,
+                    'passed': False,
+                    'error': f'API Error: {str(e)}',
+                    'execution_time': 'N/A',
+                    'memory_used': 'N/A'
+                })
+        
+        return {
+            'total_test_cases': len(test_cases),
+            'passed_count': passed_count,
+            'failed_count': failed_count,
+            'success_rate': f"{(passed_count / len(test_cases)) * 100:.1f}%",
+            'overall_result': 'PASSED' if failed_count == 0 else 'FAILED',
+            'test_results': test_results
+        }
+
+
+class ProctoringResultsView(APIView):
+    """
+    API endpoint to get all proctoring results or filter them
+    """
+    permission_classes = [AllowAny]  # You may want to change this to IsAuthenticated
+    
+    def get(self, request):
+        try:
+            from .utils import ProctoringDynamoDBHandler
+            
+            handler = ProctoringDynamoDBHandler()
+            
+            # Get query parameters for filtering
+            filter_params = {}
+            
+            session_id = request.query_params.get('session_id')
+            risk_score = request.query_params.get('risk_score')
+            min_risk_score = request.query_params.get('min_risk_score')
+            max_risk_score = request.query_params.get('max_risk_score')
+            start_date = request.query_params.get('start_date')
+            end_date = request.query_params.get('end_date')
+            has_flags = request.query_params.get('has_flags')
+            
+            if session_id:
+                filter_params['session_id'] = session_id
+            if risk_score:
+                filter_params['risk_score'] = int(risk_score)
+            if min_risk_score:
+                filter_params['min_risk_score'] = int(min_risk_score)
+            if max_risk_score:
+                filter_params['max_risk_score'] = int(max_risk_score)
+            if start_date:
+                filter_params['start_date'] = start_date
+            if end_date:
+                filter_params['end_date'] = end_date
+            if has_flags and has_flags.lower() == 'true':
+                filter_params['has_flags'] = True
+            
+            # Query results based on filters
+            if filter_params:
+                result = handler.query_proctoring_results_by_filter(filter_params)
+            else:
+                result = handler.get_all_proctoring_results()
+            
+            if result['success']:
+                return Response({
+                    'success': True,
+                    'data': result['data'],
+                    'count': result['count']
+                }, status=status.HTTP_200_OK)
+            else:
+                return Response({
+                    'success': False,
+                    'error': result['error']
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': f'Internal server error: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ProctoringResultDetailView(APIView):
+    """
+    API endpoint to get a specific proctoring result by session ID
+    """
+    permission_classes = [AllowAny]  # You may want to change this to IsAuthenticated
+    
+    def get(self, request, session_id):
+        try:
+            from .utils import ProctoringDynamoDBHandler
+            
+            handler = ProctoringDynamoDBHandler()
+            result = handler.get_proctoring_result_by_session_id(session_id)
+            
+            if result['success']:
+                return Response({
+                    'success': True,
+                    'data': result['data']
+                }, status=status.HTTP_200_OK)
+            else:
+                return Response({
+                    'success': False,
+                    'error': result['error']
+                }, status=status.HTTP_404_NOT_FOUND if 'not found' in result['error'].lower() else status.HTTP_500_INTERNAL_SERVER_ERROR)
+                
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': f'Internal server error: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

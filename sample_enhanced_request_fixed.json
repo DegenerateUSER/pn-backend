@@ -1,0 +1,168 @@
+{
+  "assessment_id": 6,
+  "student_email": "john.doe+demo1@example.com",
+  "started_at": "2025-09-07T10:00:00Z",
+  "ended_at": "2025-09-07T13:30:00Z",
+  "submitted_at": "2025-09-07T13:25:00Z",
+  "sections": [
+    {
+      "section_id": 41,
+      "set_number": 1,
+      "time_spent": 1800,
+      "questions": [
+        {
+          "question_id": 53,
+          "is_attempted": true,
+          "code_answer": "class Solution:\n    def twoSum(self, nums, target):\n        hashmap = {}\n        for i, num in enumerate(nums):\n            complement = target - num\n            if complement in hashmap:\n                return [hashmap[complement], i]\n            hashmap[num] = i\n        return []",
+          "is_correct": true,
+          "marks_obtained": 50,
+          "total_marks": 50,
+          "time_spent": 1800
+        }
+      ]
+    },
+    {
+      "section_id": 41,
+      "set_number": 2,
+      "time_spent": 1800,
+      "questions": [
+        {
+          "question_id": 60,
+          "is_attempted": true,
+          "code_answer": "def binary_search(arr, target):\n    left, right = 0, len(arr) - 1\n    while left <= right:\n        mid = (left + right) // 2\n        if arr[mid] == target:\n            return mid\n        elif arr[mid] < target:\n            left = mid + 1\n        else:\n            right = mid - 1\n    return -1",
+          "is_correct": true,
+          "marks_obtained": 55,
+          "total_marks": 55,
+          "time_spent": 1800
+        }
+      ]
+    },
+    {
+      "section_id": 42,
+      "set_number": 1,
+      "time_spent": 1200,
+      "questions": [
+        {
+          "question_id": 54,
+          "is_attempted": true,
+          "selected_option_index": 2,
+          "is_correct": true,
+          "marks_obtained": 35,
+          "total_marks": 35,
+          "time_spent": 1200
+        }
+      ]
+    },
+    {
+      "section_id": 42,
+      "set_number": 2,
+      "time_spent": 1200,
+      "questions": [
+        {
+          "question_id": 61,
+          "is_attempted": true,
+          "selected_option_index": 1,
+          "is_correct": false,
+          "marks_obtained": -8,
+          "total_marks": 40,
+          "time_spent": 1200
+        }
+      ]
+    },
+    {
+      "section_id": 43,
+      "set_number": 1,
+      "time_spent": 2400,
+      "questions": [
+        {
+          "question_id": 55,
+          "is_attempted": true,
+          "code_answer": "from flask import Flask, jsonify, request\nfrom flask_sqlalchemy import SQLAlchemy\n\napp = Flask(__name__)\napp.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///users.db'\ndb = SQLAlchemy(app)\n\nclass User(db.Model):\n    id = db.Column(db.Integer, primary_key=True)\n    name = db.Column(db.String(100), nullable=False)\n    email = db.Column(db.String(100), unique=True, nullable=False)\n\n@app.route('/api/users', methods=['GET'])\ndef get_users():\n    users = User.query.all()\n    return jsonify([{'id': u.id, 'name': u.name, 'email': u.email} for u in users])\n\n@app.route('/api/users', methods=['POST'])\ndef create_user():\n    data = request.get_json()\n    user = User(name=data['name'], email=data['email'])\n    db.session.add(user)\n    db.session.commit()\n    return jsonify({'id': user.id, 'name': user.name, 'email': user.email}), 201",
+          "is_correct": true,
+          "marks_obtained": 40,
+          "total_marks": 40,
+          "time_spent": 2400
+        }
+      ]
+    },
+    {
+      "section_id": 43,
+      "set_number": 3,
+      "time_spent": 300,
+      "questions": [
+        {
+          "question_id": 62,
+          "is_attempted": false,
+          "is_correct": false,
+          "marks_obtained": 0,
+          "total_marks": 80,
+          "time_spent": 300
+        }
+      ]
+    },
+    {
+      "section_id": 44,
+      "set_number": 1,
+      "time_spent": 1800,
+      "questions": [
+        {
+          "question_id": 56,
+          "is_attempted": true,
+          "code_answer": "-- Create optimized schema for e-commerce platform\nCREATE TABLE users (\n    id BIGSERIAL PRIMARY KEY,\n    email VARCHAR(255) UNIQUE NOT NULL,\n    name VARCHAR(100) NOT NULL,\n    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\n);\n\nCREATE INDEX idx_users_email ON users(email);\n\nCREATE TABLE products (\n    id BIGSERIAL PRIMARY KEY,\n    name VARCHAR(255) NOT NULL,\n    description TEXT,\n    price DECIMAL(10,2) NOT NULL,\n    stock_quantity INTEGER DEFAULT 0,\n    category_id INTEGER REFERENCES categories(id),\n    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\n);\n\nCREATE INDEX idx_products_category ON products(category_id);\nCREATE INDEX idx_products_price ON products(price);\n\n-- Optimize for frequent queries\nCREATE INDEX idx_products_stock ON products(stock_quantity) WHERE stock_quantity > 0;",
+          "is_correct": true,
+          "marks_obtained": 45,
+          "total_marks": 45,
+          "time_spent": 1800
+        }
+      ]
+    },
+    {
+      "section_id": 45,
+      "set_number": 1,
+      "time_spent": 1200,
+      "questions": [
+        {
+          "question_id": 57,
+          "is_attempted": true,
+          "selected_option_index": 0,
+          "is_correct": false,
+          "marks_obtained": -6,
+          "total_marks": 30,
+          "time_spent": 1200
+        }
+      ]
+    },
+    {
+      "section_id": 46,
+      "set_number": 1,
+      "time_spent": 2100,
+      "questions": [
+        {
+          "question_id": 58,
+          "is_attempted": true,
+          "code_answer": "# Bug Fix Analysis for Memory Leak Issue\n\n# Original buggy code had several issues:\n# 1. Circular references in object graph\n# 2. Event listeners not being removed\n# 3. Large data structures not being cleared\n\nclass DataProcessor:\n    def __init__(self):\n        self.cache = {}\n        self.listeners = []\n        self.processed_data = []\n    \n    def process(self, data):\n        # Fixed: Clear cache periodically to prevent memory buildup\n        if len(self.cache) > 1000:\n            self.cache.clear()\n        \n        # Fixed: Use weak references to avoid circular dependencies\n        import weakref\n        result = self._transform_data(data)\n        \n        # Fixed: Limit processed_data size\n        self.processed_data.append(result)\n        if len(self.processed_data) > 500:\n            self.processed_data = self.processed_data[-250:]  # Keep recent half\n        \n        return result\n    \n    def cleanup(self):\n        # Fixed: Explicit cleanup method\n        self.cache.clear()\n        self.listeners.clear()\n        self.processed_data.clear()",
+          "is_correct": true,
+          "marks_obtained": 55,
+          "total_marks": 60,
+          "time_spent": 2100
+        }
+      ]
+    },
+    {
+      "section_id": 47,
+      "set_number": 1,
+      "time_spent": 900,
+      "questions": [
+        {
+          "question_id": 59,
+          "is_attempted": true,
+          "selected_option_index": 2,
+          "is_correct": true,
+          "marks_obtained": 35,
+          "total_marks": 35,
+          "time_spent": 900
+        }
+      ]
+    }
+  ]
+}

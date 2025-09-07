@@ -261,3 +261,215 @@ class AssessmentS3Handler:
                 content_type = 'application/octet-stream'
         
         return self.create_presigned_url(s3_key, content_type)
+
+
+class ProctoringDynamoDBHandler:
+    """Handler for AWS DynamoDB operations related to proctoring results"""
+    
+    def __init__(self):
+        self.dynamodb = boto3.resource(
+            'dynamodb',
+            region_name='eu-central-1',  # Specific region for the ProctoringResults table
+            aws_access_key_id=config('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=config('AWS_SECRET_ACCESS_KEY')
+        )
+        self.table_name = 'ProctoringResults'
+        self.table = self.dynamodb.Table(self.table_name)
+    
+    def get_all_proctoring_results(self):
+        """Retrieve all items from the ProctoringResults table"""
+        try:
+            response = self.table.scan()
+            items = response.get('Items', [])
+            
+            # Handle pagination if there are more items
+            while 'LastEvaluatedKey' in response:
+                response = self.table.scan(ExclusiveStartKey=response['LastEvaluatedKey'])
+                items.extend(response.get('Items', []))
+            
+            # Transform items to include the specific fields the user wants
+            transformed_items = self._transform_items(items)
+            
+            return {
+                'success': True,
+                'data': transformed_items,
+                'count': len(transformed_items)
+            }
+        except ClientError as e:
+            return {
+                'success': False,
+                'error': f"DynamoDB client error: {e.response['Error']['Message']}",
+                'error_code': e.response['Error']['Code']
+            }
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f"Unexpected error: {str(e)}"
+            }
+    
+    def get_proctoring_result_by_session_id(self, session_id):
+        """Retrieve a specific proctoring result by SessionID"""
+        try:
+            response = self.table.get_item(
+                Key={'SessionID': session_id}  # Using SessionID as the primary key
+            )
+            
+            if 'Item' in response:
+                transformed_item = self._transform_item(response['Item'])
+                return {
+                    'success': True,
+                    'data': transformed_item
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': 'Item not found'
+                }
+        except ClientError as e:
+            return {
+                'success': False,
+                'error': f"DynamoDB client error: {e.response['Error']['Message']}",
+                'error_code': e.response['Error']['Code']
+            }
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f"Unexpected error: {str(e)}"
+            }
+    
+    def query_proctoring_results_by_filter(self, filter_params=None):
+        """Query proctoring results with optional filters"""
+        try:
+            scan_kwargs = {}
+            
+            if filter_params:
+                # Build FilterExpression based on provided parameters
+                filter_expressions = []
+                expression_attribute_values = {}
+                expression_attribute_names = {}
+                
+                for key, value in filter_params.items():
+                    if value is not None:
+                        if key == 'session_id':
+                            filter_expressions.append("SessionID = :session_id")
+                            expression_attribute_values[':session_id'] = value
+                        elif key == 'risk_score':
+                            # RiskScore can be stored as string or Decimal
+                            filter_expressions.append("RiskScore = :risk_score")
+                            from decimal import Decimal
+                            expression_attribute_values[':risk_score'] = Decimal(str(value))
+                        elif key == 'min_risk_score':
+                            # For numeric comparison, we need to use attribute names
+                            filter_expressions.append("#risk_score >= :min_risk_score")
+                            expression_attribute_names['#risk_score'] = 'RiskScore'
+                            from decimal import Decimal
+                            expression_attribute_values[':min_risk_score'] = Decimal(str(value))
+                        elif key == 'max_risk_score':
+                            filter_expressions.append("#risk_score <= :max_risk_score")
+                            expression_attribute_names['#risk_score'] = 'RiskScore'
+                            from decimal import Decimal
+                            expression_attribute_values[':max_risk_score'] = Decimal(str(value))
+                        elif key == 'start_date':
+                            filter_expressions.append("#timestamp >= :start_date")
+                            expression_attribute_names['#timestamp'] = 'Timestamp'
+                            expression_attribute_values[':start_date'] = value
+                        elif key == 'end_date':
+                            filter_expressions.append("#timestamp <= :end_date")
+                            expression_attribute_names['#timestamp'] = 'Timestamp'
+                            expression_attribute_values[':end_date'] = value
+                        elif key == 'has_flags':
+                            # Check if Flags array is not empty
+                            filter_expressions.append("size(Flags) > :zero")
+                            expression_attribute_values[':zero'] = 0
+                
+                if filter_expressions:
+                    scan_kwargs['FilterExpression'] = ' AND '.join(filter_expressions)
+                    scan_kwargs['ExpressionAttributeValues'] = expression_attribute_values
+                    if expression_attribute_names:
+                        scan_kwargs['ExpressionAttributeNames'] = expression_attribute_names
+            
+            response = self.table.scan(**scan_kwargs)
+            items = response.get('Items', [])
+            
+            # Handle pagination if there are more items
+            while 'LastEvaluatedKey' in response:
+                response = self.table.scan(
+                    ExclusiveStartKey=response['LastEvaluatedKey'],
+                    **scan_kwargs
+                )
+                items.extend(response.get('Items', []))
+            
+            # Transform items to include the specific fields the user wants
+            transformed_items = self._transform_items(items)
+            
+            return {
+                'success': True,
+                'data': transformed_items,
+                'count': len(transformed_items)
+            }
+        except ClientError as e:
+            return {
+                'success': False,
+                'error': f"DynamoDB client error: {e.response['Error']['Message']}",
+                'error_code': e.response['Error']['Code']
+            }
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f"Unexpected error: {str(e)}"
+            }
+    
+    def _transform_item(self, item):
+        """Transform a single DynamoDB item to the required format"""
+        transformed = {
+            'session_id': item.get('SessionID', ''),
+            'flags': self._parse_flags(item.get('Flags', [])),
+            'risk_score': self._parse_risk_score(item.get('RiskScore', 0)),
+            'timestamp': item.get('Timestamp', ''),
+            # Include additional fields that might be useful
+            's3_key': item.get('S3Key', ''),
+            'rekognition_face_response': self._parse_json_field(item.get('RekognitionFaceResponse', '{}')),
+            'rekognition_label_response': self._parse_json_field(item.get('RekognitionLabelResponse', '{}'))
+        }
+        return transformed
+    
+    def _transform_items(self, items):
+        """Transform multiple DynamoDB items to the required format"""
+        return [self._transform_item(item) for item in items]
+    
+    def _parse_risk_score(self, risk_score_value):
+        """Parse risk score from various formats (string, Decimal, int)"""
+        try:
+            from decimal import Decimal
+            if isinstance(risk_score_value, Decimal):
+                return int(risk_score_value)
+            elif isinstance(risk_score_value, (int, float)):
+                return int(risk_score_value)
+            elif isinstance(risk_score_value, str):
+                if risk_score_value.isdigit():
+                    return int(risk_score_value)
+                else:
+                    return int(float(risk_score_value))  # Handle decimal strings
+            else:
+                return 0
+        except (ValueError, TypeError):
+            return 0
+    
+    def _parse_flags(self, flags_data):
+        """Parse the Flags field which is an array of objects with 'S' property"""
+        try:
+            if isinstance(flags_data, list):
+                return [flag.get('S', '') for flag in flags_data if isinstance(flag, dict) and 'S' in flag]
+            return []
+        except Exception:
+            return []
+    
+    def _parse_json_field(self, json_string):
+        """Safely parse JSON string fields"""
+        try:
+            if isinstance(json_string, str) and json_string.strip():
+                import json
+                return json.loads(json_string)
+            return {}
+        except (json.JSONDecodeError, Exception):
+            return {}
