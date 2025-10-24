@@ -56,9 +56,45 @@ DEBUG = os.getenv("DEBUG", "0") == "1"
 
 ALLOWED_HOSTS = [
     'localhost',
-    '*'
+    '127.0.0.1',
+    '550b6ca449d2.ngrok-free.app',
+    '359360c8b5e9.ngrok-free.app',
+    '.ngrok-free.app',  # Allow all ngrok domains
+    '.ngrok.io',
+    '*',  # For development only - remove in production
 ]
 
+CSRF_TRUSTED_ORIGINS = [
+    'https://550b6ca449d2.ngrok-free.app',
+    'https://359360c8b5e9.ngrok-free.app',
+    'https://*.ngrok-free.app',
+    'https://*.ngrok.io',
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+]
+
+CORS_ALLOWED_ORIGINS = [
+    'https://550b6ca449d2.ngrok-free.app',
+    'https://359360c8b5e9.ngrok-free.app',
+    'https://*.ngrok-free.app',  # If your frontend is also on ngrok
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+]
+
+CORS_ALLOW_ALL_ORIGINS = True  # For development only
+CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+    'ngrok-skip-browser-warning',  # Important for ngrok!
+]
 
 # Application definition
 

@@ -79,6 +79,19 @@ class QuestionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Question
         fields = '__all__'
+    
+    def validate_question_type(self, value):
+        """
+        Ensure only 'coding' and 'non-coding' question types are allowed.
+        Subjective questions are NOT supported.
+        """
+        allowed_types = ['coding', 'non-coding']
+        if value not in allowed_types:
+            raise ValidationError(
+                f"Invalid question type '{value}'. Only 'coding' and 'non-coding' (MCQ) types are supported. "
+                f"Subjective questions are not allowed."
+            )
+        return value
 
 
 class SectionSerializer(serializers.ModelSerializer):
@@ -141,7 +154,15 @@ class AssessmentSerializer(serializers.ModelSerializer):
             return attrs
 
         errors = {}
+        allowed_question_types = ['coding', 'non-coding']
+        
         for idx, q in enumerate(questions):
+            # Validate question type - only 'coding' and 'non-coding' allowed
+            question_type = q.get('question_type', 'non-coding')
+            if question_type not in allowed_question_types:
+                errors[idx] = f"Invalid question_type '{question_type}'. Only 'coding' and 'non-coding' (MCQ) types are supported. Subjective questions are not allowed."
+                continue
+            
             text = q.get('question_text', '') or ''
             refs = [int(n) for n in re.findall(r"\$(\d+)", text)]
             for n in refs:

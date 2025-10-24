@@ -60,6 +60,13 @@ class User(AbstractUser):
         verbose_name_plural = "User"
 
 """
+Assessment JSON Structure:
+
+NOTE: Only TWO question types are supported:
+1. "coding" - Coding questions with test cases
+2. "non-coding" - Multiple Choice Questions (MCQs)
+
+Subjective/Essay/Descriptive questions are NOT supported!
 
 {
     "assessment_name": "test",
@@ -73,15 +80,15 @@ class User(AbstractUser):
     "num_of_ai_generated_questions": <int>,
     "questions": [
      {
-        "question_type": enum("coding", "non-coding")
+        "question_type": enum("coding", "non-coding")  // ONLY these two types allowed!
         "section_id": <int> (less than equal to num_of_sections),
         "set_number": <int>,
         "question_text" <string> (any references should be starting from $1 and then number goes up)
-        "options": [<string>,] (can add references as well)
+        "options": [<string>,] (for non-coding/MCQ questions)
         "positive_marks": <int>,
         "negative_marks": <int>,
         "time_limit": <UTC datetime format>,
-        "test_cases":[
+        "test_cases":[  // Only for coding questions
             {
                 ""
             }
@@ -247,15 +254,17 @@ class Section(models.Model):
 
 # --------- QUESTIONS ----------
 class Question(models.Model):
+    # Only two types allowed: coding and non-coding (MCQs)
+    # Subjective questions are NOT supported
     QuestionTypeChoices = [
         ("coding", "Coding"),
-        ("non-coding", "Non Coding"),
+        ("non-coding", "Non Coding (MCQ)"),
     ]
     
     
     section = models.ForeignKey(Section, on_delete=models.CASCADE, related_name="questions") #issue
     question_text = models.TextField()
-    question_type = models.CharField(max_length=255, choices=QuestionTypeChoices, default="non-coding")
+    question_type = models.CharField(max_length=20, choices=QuestionTypeChoices, default="non-coding")
     options = models.JSONField(blank=True, null=True)  
     correct_answer = models.JSONField(blank=True, null=True)
     description = models.TextField(blank=True, null=True)  # Problem description
